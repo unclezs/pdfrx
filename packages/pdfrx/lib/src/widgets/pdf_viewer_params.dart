@@ -73,6 +73,7 @@ class PdfViewerParams {
     this.forceReload = false,
     this.scrollPhysics,
     this.scrollPhysicsScale,
+    this.scrollInteractionDelegateProvider,
   });
 
   /// Margin around the page.
@@ -563,6 +564,15 @@ class PdfViewerParams {
   /// Scroll physics for scaling within the viewer. If null, it uses the same value as [scrollPhysics].
   final ScrollPhysics? scrollPhysicsScale;
 
+  /// Provider for scroll interaction delegate.
+  ///
+  /// This allows customizing scroll and zoom behavior of the PDF viewer.
+  /// If null, the default behavior is used (instant scroll/zoom).
+  ///
+  /// See [PdfViewerScrollInteractionDelegateInstantProvider] and
+  /// [PdfViewerScrollInteractionDelegatePhysicsProvider] for available implementations.
+  final PdfViewerScrollInteractionDelegateProvider? scrollInteractionDelegateProvider;
+
   /// A convenience function to get platform-specific default scroll physics.
   ///
   /// On iOS/MacOS this is [BouncingScrollPhysics], and on Android this is [FixedOverscrollPhysics], a
@@ -607,7 +617,8 @@ class PdfViewerParams {
         other.horizontalCacheExtent != horizontalCacheExtent ||
         other.verticalCacheExtent != verticalCacheExtent ||
         other.linkHandlerParams != linkHandlerParams ||
-        other.scrollPhysics != scrollPhysics;
+        other.scrollPhysics != scrollPhysics ||
+        other.scrollInteractionDelegateProvider != scrollInteractionDelegateProvider;
   }
 
   @override
@@ -668,7 +679,8 @@ class PdfViewerParams {
         other.keyHandlerParams == keyHandlerParams &&
         other.behaviorControlParams == behaviorControlParams &&
         other.forceReload == forceReload &&
-        other.scrollPhysics == scrollPhysics;
+        other.scrollPhysics == scrollPhysics &&
+        other.scrollInteractionDelegateProvider == scrollInteractionDelegateProvider;
   }
 
   @override
@@ -727,7 +739,8 @@ class PdfViewerParams {
         keyHandlerParams.hashCode ^
         behaviorControlParams.hashCode ^
         forceReload.hashCode ^
-        scrollPhysics.hashCode;
+        scrollPhysics.hashCode ^
+        scrollInteractionDelegateProvider.hashCode;
   }
 }
 

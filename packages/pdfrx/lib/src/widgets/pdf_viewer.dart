@@ -210,7 +210,7 @@ class PdfViewer extends StatefulWidget {
 }
 
 class _PdfViewerState extends State<PdfViewer>
-    with SingleTickerProviderStateMixin
+    with TickerProviderStateMixin
     implements PdfTextSelectionDelegate, PdfViewerCoordinateConverter {
   PdfViewerController? _controller;
   late final _txController = _PdfViewerTransformationController(this);
@@ -282,12 +282,26 @@ class _PdfViewerState extends State<PdfViewer>
   // the viewport
   EdgeInsets _adjustedBoundaryMargins = EdgeInsets.zero;
 
+  /// Scroll interaction delegate for customizing scroll/zoom behavior
+  PdfViewerScrollInteractionDelegate? _scrollInteractionDelegate;
+
   @override
   void initState() {
     super.initState();
     pdfrxFlutterInitialize();
     _animController = AnimationController(vsync: this, duration: const Duration(milliseconds: 200));
+    _initScrollInteractionDelegate();
     _widgetUpdated(null);
+  }
+
+  void _initScrollInteractionDelegate() {
+    _scrollInteractionDelegate?.dispose();
+    _scrollInteractionDelegate = null;
+    final provider = widget.params.scrollInteractionDelegateProvider;
+    if (provider != null && _controller != null) {
+      _scrollInteractionDelegate = provider.create();
+      _scrollInteractionDelegate!.init(_controller!, this);
+    }
   }
 
   @override
@@ -299,6 +313,11 @@ class _PdfViewerState extends State<PdfViewer>
   Future<void> _widgetUpdated(PdfViewer? oldWidget) async {
     if (widget == oldWidget) {
       return;
+    }
+
+    // Check if scroll interaction delegate provider changed
+    if (widget.params.scrollInteractionDelegateProvider != oldWidget?.params.scrollInteractionDelegateProvider) {
+      _initScrollInteractionDelegate();
     }
 
     if (oldWidget?.documentRef.key == widget.documentRef.key) {
@@ -350,6 +369,7 @@ class _PdfViewerState extends State<PdfViewer>
 
     _controller ??= widget.controller ?? PdfViewerController();
     _controller!._attach(this);
+    _initScrollInteractionDelegate();
     _txController.addListener(_onMatrixChanged);
     _documentSubscription = document.events.listen(_onDocumentEvent);
 
@@ -387,6 +407,7 @@ class _PdfViewerState extends State<PdfViewer>
   @override
   void dispose() {
     focusReportForPreventingContextMenuWeb(this, false);
+    _scrollInteractionDelegate?.dispose();
     _documentSubscription?.cancel();
     _textSelectionChangedDebounceTimer?.cancel();
     _interactionEndedTimer?.cancel();
@@ -483,6 +504,7 @@ class _PdfViewerState extends State<PdfViewer>
                         onInteractionUpdate: widget.params.onInteractionUpdate,
                         interactionEndFrictionCoefficient: widget.params.interactionEndFrictionCoefficient,
                         onWheelDelta: widget.params.scrollByMouseWheel != null ? _onWheelDelta : null,
+                        onPointerScale: _scrollInteractionDelegate != null ? _onPointerScale : null,
                         scrollPhysics: widget.params.scrollPhysics,
                         scrollPhysicsScale: widget.params.scrollPhysicsScale,
                         scrollPhysicsAutoAdjustBoundaries: false,
@@ -1601,6 +1623,14 @@ class _PdfViewerState extends State<PdfViewer>
 
       final dx = -event.scrollDelta.dx * widget.params.scrollByMouseWheel! / _currentZoom;
       final dy = -event.scrollDelta.dy * widget.params.scrollByMouseWheel! / _currentZoom;
+
+      // Use scroll interaction delegate if available
+      if (_scrollInteractionDelegate != null) {
+        final delta = widget.params.scrollHorizontallyByMouseWheel ? Offset(dy, dx) : Offset(dx, dy);
+        _scrollInteractionDelegate!.pan(delta);
+        return;
+      }
+
       final m = _txController.value.clone();
       if (widget.params.scrollHorizontallyByMouseWheel) {
         m.translateByDouble(dy, dx, 0, 1);
@@ -1608,6 +1638,19 @@ class _PdfViewerState extends State<PdfViewer>
         m.translateByDouble(dx, dy, 0, 1);
       }
       _txController.value = _makeMatrixInSafeRange(m, forceClamp: true);
+    } finally {
+      _stopInteraction();
+    }
+  }
+
+  void _onPointerScale(PointerScaleEvent event) {
+    if (_scrollInteractionDelegate == null) return;
+    _startInteraction();
+    try {
+      final localPosition = _controller!.globalToLocal(event.position);
+      if (localPosition != null) {
+        _scrollInteractionDelegate!.zoom(localPosition, event.scale);
+      }
     } finally {
       _stopInteraction();
     }
