@@ -6,6 +6,7 @@ import 'pdf_document.dart';
 import 'pdf_document_event.dart';
 import 'pdf_image.dart';
 import 'pdf_link.dart';
+import 'pdf_page_object.dart';
 import 'pdf_page_proxies.dart';
 import 'pdf_page_status_change.dart';
 import 'pdf_text.dart';
@@ -100,6 +101,14 @@ abstract class PdfPage {
   ///
   /// If the page is not loaded yet (progressive loading case only), this function returns an empty list.
   Future<List<PdfLink>> loadLinks({bool compact = false, bool enableAutoLinkDetection = true});
+
+  /// Load page objects (images, text objects, paths, etc.).
+  ///
+  /// This method extracts all objects from the PDF page, which can be used for
+  /// content reflow or image extraction.
+  ///
+  /// If the page is not loaded yet (progressive loading case only), this function returns null.
+  Future<PdfPageObjects?> loadObjects();
 }
 
 /// Extension methods for [PdfPage].

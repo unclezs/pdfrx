@@ -24,6 +24,7 @@ import '../pdf_image.dart';
 import '../pdf_link.dart';
 import '../pdf_outline_node.dart';
 import '../pdf_page.dart';
+import '../pdf_page_object.dart';
 import '../pdf_page_proxies.dart';
 import '../pdf_page_status_change.dart';
 import '../pdf_permissions.dart';
@@ -1308,6 +1309,114 @@ class _PdfPagePdfium extends PdfPage {
     return List.unmodifiable(links);
   }
 
+  @override
+  Future<PdfPageObjects?> loadObjects() async {
+    if (document.isDisposed || !isLoaded) return null;
+    return await (await BackgroundWorker.instance).computeWithArena((arena, params) {
+      final doc = pdfium_bindings.FPDF_DOCUMENT.fromAddress(params.docHandle);
+      final page = pdfium.FPDF_LoadPage(doc, params.pageNumber - 1);
+      try {
+        final objectCount = pdfium.FPDFPage_CountObjects(page);
+        final objects = <_PdfPageObjectData>[];
+
+        final leftPtr = arena<Float>();
+        final bottomPtr = arena<Float>();
+        final rightPtr = arena<Float>();
+        final topPtr = arena<Float>();
+        final widthPtr = arena<UnsignedInt>();
+        final heightPtr = arena<UnsignedInt>();
+        final metadataPtr = arena<pdfium_bindings.FPDF_IMAGEOBJ_METADATA>();
+
+        for (var i = 0; i < objectCount; i++) {
+          final obj = pdfium.FPDFPage_GetObject(page, i);
+          final type = pdfium.FPDFPageObj_GetType(obj);
+
+          // Get bounds
+          final boundsResult = pdfium.FPDFPageObj_GetBounds(obj, leftPtr, bottomPtr, rightPtr, topPtr);
+          final bounds = boundsResult != 0
+              ? PdfRect(
+                  leftPtr.value - params.bbLeft,
+                  topPtr.value - params.bbBottom,
+                  rightPtr.value - params.bbLeft,
+                  bottomPtr.value - params.bbBottom,
+                )
+              : PdfRect.empty;
+
+          if (type == pdfium_bindings.FPDF_PAGEOBJ_IMAGE) {
+            // Get image metadata
+            final metadataResult = pdfium.FPDFImageObj_GetImageMetadata(obj, page, metadataPtr);
+            int width = 0;
+            int height = 0;
+            double horizontalDpi = 72.0;
+            double verticalDpi = 72.0;
+            int bitsPerPixel = 0;
+            int colorspace = 0;
+
+            if (metadataResult != 0) {
+              width = metadataPtr.ref.width;
+              height = metadataPtr.ref.height;
+              horizontalDpi = metadataPtr.ref.horizontal_dpi;
+              verticalDpi = metadataPtr.ref.vertical_dpi;
+              bitsPerPixel = metadataPtr.ref.bits_per_pixel;
+              colorspace = metadataPtr.ref.colorspace;
+            } else {
+              // Fallback to pixel size
+              final pixelSizeResult = pdfium.FPDFImageObj_GetImagePixelSize(obj, widthPtr, heightPtr);
+              if (pixelSizeResult != 0) {
+                width = widthPtr.value;
+                height = heightPtr.value;
+              }
+            }
+
+            objects.add(_PdfPageObjectData(
+              type: type,
+              bounds: bounds,
+              imageWidth: width,
+              imageHeight: height,
+              horizontalDpi: horizontalDpi,
+              verticalDpi: verticalDpi,
+              bitsPerPixel: bitsPerPixel,
+              colorspace: colorspace,
+              objectIndex: i,
+            ));
+          } else {
+            objects.add(_PdfPageObjectData(
+              type: type,
+              bounds: bounds,
+              objectIndex: i,
+            ));
+          }
+        }
+
+        return objects;
+      } finally {
+        pdfium.FPDF_ClosePage(page);
+      }
+    }, (docHandle: document.document.address, pageNumber: pageNumber, bbLeft: bbLeft, bbBottom: bbBottom)).then((data) {
+      final objects = data.map((d) {
+        if (d.type == pdfium_bindings.FPDF_PAGEOBJ_IMAGE) {
+          return _PdfImageObjectPdfium(
+            document: document,
+            pageNumber: pageNumber,
+            objectIndex: d.objectIndex,
+            bounds: d.bounds,
+            width: d.imageWidth ?? 0,
+            height: d.imageHeight ?? 0,
+            horizontalDpi: d.horizontalDpi ?? 72.0,
+            verticalDpi: d.verticalDpi ?? 72.0,
+            bitsPerPixel: d.bitsPerPixel ?? 0,
+            colorspace: PdfImageColorspace.fromValue(d.colorspace ?? 0),
+          );
+        }
+        return _PdfPageObjectPdfium(
+          type: PdfPageObjectType.fromValue(d.type),
+          bounds: d.bounds,
+        );
+      }).toList();
+      return PdfPageObjects(objects: objects);
+    });
+  }
+
   Future<List<PdfLink>> _loadWebLinks() async => document.isDisposed
       ? []
       : await (await BackgroundWorker.instance).computeWithArena((arena, params) {
@@ -1594,5 +1703,232 @@ class _FileAccess {
   void dispose() {
     malloc.free(fileAccess);
     _nativeReadCallable?.close();
+  }
+}
+
+/// Internal data class for transferring page object data from worker.
+class _PdfPageObjectData {
+  const _PdfPageObjectData({
+    required this.type,
+    required this.bounds,
+    required this.objectIndex,
+    this.imageWidth,
+    this.imageHeight,
+    this.horizontalDpi,
+    this.verticalDpi,
+    this.bitsPerPixel,
+    this.colorspace,
+  });
+
+  final int type;
+  final PdfRect bounds;
+  final int objectIndex;
+  final int? imageWidth;
+  final int? imageHeight;
+  final double? horizontalDpi;
+  final double? verticalDpi;
+  final int? bitsPerPixel;
+  final int? colorspace;
+}
+
+/// Basic page object implementation.
+class _PdfPageObjectPdfium implements PdfPageObject {
+  const _PdfPageObjectPdfium({
+    required this.type,
+    required this.bounds,
+  });
+
+  @override
+  final PdfPageObjectType type;
+
+  @override
+  final PdfRect bounds;
+}
+
+/// Image object implementation with bitmap extraction capabilities.
+class _PdfImageObjectPdfium implements PdfImageObject {
+  _PdfImageObjectPdfium({
+    required this.document,
+    required this.pageNumber,
+    required this.objectIndex,
+    required this.bounds,
+    required this.width,
+    required this.height,
+    required this.horizontalDpi,
+    required this.verticalDpi,
+    required this.bitsPerPixel,
+    required this.colorspace,
+  });
+
+  final _PdfDocumentPdfium document;
+  final int pageNumber;
+  final int objectIndex;
+
+  @override
+  final PdfRect bounds;
+
+  @override
+  final int width;
+
+  @override
+  final int height;
+
+  @override
+  final double horizontalDpi;
+
+  @override
+  final double verticalDpi;
+
+  @override
+  final int bitsPerPixel;
+
+  @override
+  final PdfImageColorspace colorspace;
+
+  @override
+  PdfPageObjectType get type => PdfPageObjectType.image;
+
+  @override
+  Future<PdfImage?> getRenderedBitmap() async {
+    if (document.isDisposed) return null;
+    return await (await BackgroundWorker.instance).compute((params) {
+      final doc = pdfium_bindings.FPDF_DOCUMENT.fromAddress(params.docHandle);
+      final page = pdfium.FPDF_LoadPage(doc, params.pageNumber - 1);
+      try {
+        final obj = pdfium.FPDFPage_GetObject(page, params.objectIndex);
+        final bitmap = pdfium.FPDFImageObj_GetRenderedBitmap(doc, page, obj);
+        if (bitmap == nullptr) return null;
+
+        try {
+          final width = pdfium.FPDFBitmap_GetWidth(bitmap);
+          final height = pdfium.FPDFBitmap_GetHeight(bitmap);
+          final stride = pdfium.FPDFBitmap_GetStride(bitmap);
+          final bufferPtr = pdfium.FPDFBitmap_GetBuffer(bitmap);
+
+          if (width <= 0 || height <= 0 || bufferPtr == nullptr) {
+            return null;
+          }
+
+          // Copy pixel data
+          const rgbaSize = 4;
+          final resultBuffer = malloc<Uint8>(width * height * rgbaSize);
+          final srcBuffer = bufferPtr.cast<Uint8>();
+
+          for (var y = 0; y < height; y++) {
+            for (var x = 0; x < width; x++) {
+              final srcOffset = y * stride + x * rgbaSize;
+              final dstOffset = y * width * rgbaSize + x * rgbaSize;
+              // Copy BGRA
+              resultBuffer[dstOffset] = srcBuffer[srcOffset];
+              resultBuffer[dstOffset + 1] = srcBuffer[srcOffset + 1];
+              resultBuffer[dstOffset + 2] = srcBuffer[srcOffset + 2];
+              resultBuffer[dstOffset + 3] = srcBuffer[srcOffset + 3];
+            }
+          }
+
+          return (width: width, height: height, bufferAddress: resultBuffer.address);
+        } finally {
+          pdfium.FPDFBitmap_Destroy(bitmap);
+        }
+      } finally {
+        pdfium.FPDF_ClosePage(page);
+      }
+    }, (docHandle: document.document.address, pageNumber: pageNumber, objectIndex: objectIndex)).then((data) {
+      if (data == null) return null;
+      return _PdfImagePdfium._(
+        width: data.width,
+        height: data.height,
+        buffer: Pointer<Uint8>.fromAddress(data.bufferAddress),
+      );
+    });
+  }
+
+  @override
+  Future<PdfImage?> getBitmap() async {
+    if (document.isDisposed) return null;
+    return await (await BackgroundWorker.instance).compute((params) {
+      final doc = pdfium_bindings.FPDF_DOCUMENT.fromAddress(params.docHandle);
+      final page = pdfium.FPDF_LoadPage(doc, params.pageNumber - 1);
+      try {
+        final obj = pdfium.FPDFPage_GetObject(page, params.objectIndex);
+        final bitmap = pdfium.FPDFImageObj_GetBitmap(obj);
+        if (bitmap == nullptr) return null;
+
+        try {
+          final width = pdfium.FPDFBitmap_GetWidth(bitmap);
+          final height = pdfium.FPDFBitmap_GetHeight(bitmap);
+          final stride = pdfium.FPDFBitmap_GetStride(bitmap);
+          final bufferPtr = pdfium.FPDFBitmap_GetBuffer(bitmap);
+
+          if (width <= 0 || height <= 0 || bufferPtr == nullptr) {
+            return null;
+          }
+
+          // Copy pixel data
+          const rgbaSize = 4;
+          final resultBuffer = malloc<Uint8>(width * height * rgbaSize);
+          final srcBuffer = bufferPtr.cast<Uint8>();
+
+          for (var y = 0; y < height; y++) {
+            for (var x = 0; x < width; x++) {
+              final srcOffset = y * stride + x * rgbaSize;
+              final dstOffset = y * width * rgbaSize + x * rgbaSize;
+              // Copy BGRA
+              resultBuffer[dstOffset] = srcBuffer[srcOffset];
+              resultBuffer[dstOffset + 1] = srcBuffer[srcOffset + 1];
+              resultBuffer[dstOffset + 2] = srcBuffer[srcOffset + 2];
+              resultBuffer[dstOffset + 3] = srcBuffer[srcOffset + 3];
+            }
+          }
+
+          return (width: width, height: height, bufferAddress: resultBuffer.address);
+        } finally {
+          pdfium.FPDFBitmap_Destroy(bitmap);
+        }
+      } finally {
+        pdfium.FPDF_ClosePage(page);
+      }
+    }, (docHandle: document.document.address, pageNumber: pageNumber, objectIndex: objectIndex)).then((data) {
+      if (data == null) return null;
+      return _PdfImagePdfium._(
+        width: data.width,
+        height: data.height,
+        buffer: Pointer<Uint8>.fromAddress(data.bufferAddress),
+      );
+    });
+  }
+
+  @override
+  Future<Uint8List?> getDecodedData() async {
+    if (document.isDisposed) return null;
+    return await (await BackgroundWorker.instance).compute((params) {
+      final doc = pdfium_bindings.FPDF_DOCUMENT.fromAddress(params.docHandle);
+      final page = pdfium.FPDF_LoadPage(doc, params.pageNumber - 1);
+      try {
+        final obj = pdfium.FPDFPage_GetObject(page, params.objectIndex);
+
+        // First call to get the required buffer size
+        final size = pdfium.FPDFImageObj_GetImageDataDecoded(obj, nullptr, 0);
+        if (size <= 0) return null;
+
+        // Allocate buffer and get data
+        final buffer = malloc<Uint8>(size);
+        try {
+          final actualSize = pdfium.FPDFImageObj_GetImageDataDecoded(obj, buffer.cast<Void>(), size);
+          if (actualSize <= 0) {
+            malloc.free(buffer);
+            return null;
+          }
+          return buffer.asTypedList(actualSize).toList();
+        } finally {
+          malloc.free(buffer);
+        }
+      } finally {
+        pdfium.FPDF_ClosePage(page);
+      }
+    }, (docHandle: document.document.address, pageNumber: pageNumber, objectIndex: objectIndex)).then((data) {
+      if (data == null) return null;
+      return Uint8List.fromList(data);
+    });
   }
 }
