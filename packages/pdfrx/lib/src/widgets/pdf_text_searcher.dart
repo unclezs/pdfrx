@@ -17,7 +17,8 @@ class PdfTextSearcher extends Listenable {
   final PdfViewerController _controller;
 
   /// The [PdfViewerController] to use.
-  PdfViewerController? get controller => _controller.isReady ? _controller : null;
+  PdfViewerController? get controller =>
+      _controller.isReady ? _controller : null;
 
   Timer? _searchTextTimer; // timer to start search
   int _searchSession = 0; // current search session
@@ -115,7 +116,10 @@ class PdfTextSearcher extends Listenable {
     _resetTextSearch(notify: false);
   }
 
-  void _resetTextSearch({bool notify = true, bool clearSearchCondition = true}) {
+  void _resetTextSearch({
+    bool notify = true,
+    bool clearSearchCondition = true,
+  }) {
     _cancelTextSearch();
     _matches = const [];
     _matchesPageStartIndices = const [];
@@ -136,7 +140,10 @@ class PdfTextSearcher extends Listenable {
     ++_searchSession;
   }
 
-  Future<void> _startTextSearchInternal(_SearchCondition condition, int searchSession) async {
+  Future<void> _startTextSearchInternal(
+    _SearchCondition condition,
+    int searchSession,
+  ) async {
     await controller?.useDocument((document) async {
       final textMatches = <PdfPageTextRange>[];
       final textMatchesPageStartIndex = <int>[];
@@ -150,7 +157,10 @@ class PdfTextSearcher extends Listenable {
         if (searchSession != _searchSession) return;
         if (pageText == null) continue;
         textMatchesPageStartIndex.add(textMatches.length);
-        await for (final f in pageText.allMatches(condition.pattern, caseInsensitive: condition.caseInsensitive)) {
+        await for (final f in pageText.allMatches(
+          condition.pattern,
+          caseInsensitive: condition.caseInsensitive,
+        )) {
           if (searchSession != _searchSession) return;
           textMatches.add(f);
         }
@@ -176,7 +186,9 @@ class PdfTextSearcher extends Listenable {
     _documentEventSubscription = controller!.document.events.listen((event) {
       if (event is PdfDocumentPageStatusChangedEvent) {
         final changedPages = event.changes.keys.toSet();
-        final needRestart = _matches.any((m) => changedPages.contains(m.pageNumber));
+        final needRestart = _matches.any(
+          (m) => changedPages.contains(m.pageNumber),
+        );
         if (needRestart) {
           _restartSearch();
         }
@@ -201,7 +213,8 @@ class PdfTextSearcher extends Listenable {
     final cached = _cachedText[pageNumber];
     if (cached != null) return cached;
     return await controller?.useDocument((document) async {
-      return _cachedText[pageNumber] ??= await document.pages[pageNumber - 1].loadStructuredText();
+      return _cachedText[pageNumber] ??= await document.pages[pageNumber - 1]
+          .loadStructuredText();
     });
   }
 
@@ -236,7 +249,10 @@ class PdfTextSearcher extends Listenable {
     _currentMatch = match;
     _currentIndex = _matches.indexOf(match);
     await controller?.ensureVisible(
-      controller!.calcRectForRectInsidePage(pageNumber: match.pageNumber, rect: match.bounds),
+      controller!.calcRectForRectInsidePage(
+        pageNumber: match.pageNumber,
+        rect: match.bounds,
+      ),
       margin: 50,
     );
     controller?.setCurrentPageNumber(match.pageNumber);
@@ -247,7 +263,9 @@ class PdfTextSearcher extends Listenable {
   ({int start, int end})? getMatchesRangeForPage(int pageNumber) {
     if (_matchesPageStartIndices.length < pageNumber) return null;
     final start = _matchesPageStartIndices[pageNumber - 1];
-    final end = _matchesPageStartIndices.length > pageNumber ? _matchesPageStartIndices[pageNumber] : _matches.length;
+    final end = _matchesPageStartIndices.length > pageNumber
+        ? _matchesPageStartIndices[pageNumber]
+        : _matches.length;
     return (start: start, end: end);
   }
 
@@ -262,17 +280,39 @@ class PdfTextSearcher extends Listenable {
   /// Paint callback to highlight the matches.
   ///
   /// Use this with [PdfViewerParams.pagePaintCallbacks] to highlight the matches.
-  void pageTextMatchPaintCallback(ui.Canvas canvas, Rect pageRect, PdfPage page) {
+  void pageTextMatchPaintCallback(
+    ui.Canvas canvas,
+    Rect pageRect,
+    PdfPage page,
+  ) {
     final range = getMatchesRangeForPage(page.pageNumber);
     if (range == null) return;
 
-    final matchTextColor = controller?.params.matchTextColor ?? Colors.yellow.withAlpha(127);
-    final activeMatchTextColor = controller?.params.activeMatchTextColor ?? Colors.orange.withAlpha(127);
+    final matchTextColor =
+        controller?.params.matchTextColor ?? Colors.yellow.withAlpha(127);
+    final activeMatchTextColor =
+        controller?.params.activeMatchTextColor ?? Colors.orange.withAlpha(127);
 
     for (var i = range.start; i < range.end; i++) {
       final m = _matches[i];
-      final rect = m.bounds.toRect(page: page, scaledPageSize: pageRect.size).translate(pageRect.left, pageRect.top);
-      canvas.drawRect(rect, Paint()..color = m == _currentMatch ? activeMatchTextColor : matchTextColor);
+      final rect =
+          controller?.calcRectForRectInsidePage(
+            pageNumber: page.pageNumber,
+            rect: m.bounds,
+          ) ??
+          m.bounds
+              .toRect(page: page, scaledPageSize: pageRect.size)
+              .translate(pageRect.left, pageRect.top);
+      final clipped = rect.intersect(pageRect);
+      if (!clipped.isEmpty) {
+        canvas.drawRect(
+          clipped,
+          Paint()
+            ..color = m == _currentMatch
+                ? activeMatchTextColor
+                : matchTextColor,
+        );
+      }
     }
   }
 
@@ -300,7 +340,11 @@ extension _PatternExts on Pattern {
 }
 
 class _SearchCondition {
-  const _SearchCondition({required this.pattern, required this.caseInsensitive, required this.goToFirstMatch});
+  const _SearchCondition({
+    required this.pattern,
+    required this.caseInsensitive,
+    required this.goToFirstMatch,
+  });
   final Pattern pattern;
   final bool caseInsensitive;
   final bool goToFirstMatch;

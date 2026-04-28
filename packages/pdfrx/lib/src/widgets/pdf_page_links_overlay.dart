@@ -49,6 +49,22 @@ class _PdfPageLinksOverlayState extends State<PdfPageLinksOverlay> {
     }
   }
 
+  Rect _linkRectToCroppedPageRect(PdfRect rect) {
+    final cropRect = widget.params.getPageCropRect(widget.page);
+    final pageRect = rect.toRect(page: widget.page);
+    final sx = widget.pageRect.width / cropRect.width;
+    final sy = widget.pageRect.height / cropRect.height;
+    final mapped = Rect.fromLTRB(
+      (pageRect.left - cropRect.left) * sx,
+      (pageRect.top - cropRect.top) * sy,
+      (pageRect.right - cropRect.left) * sx,
+      (pageRect.bottom - cropRect.top) * sy,
+    );
+    return mapped.intersect(
+      Rect.fromLTWH(0, 0, widget.pageRect.width, widget.pageRect.height),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (links == null) return const SizedBox();
@@ -56,8 +72,15 @@ class _PdfPageLinksOverlayState extends State<PdfPageLinksOverlay> {
     final linkWidgets = <Widget>[];
     for (final link in links!) {
       for (final rect in link.rects) {
-        final rectLink = rect.toRect(page: widget.page, scaledPageSize: widget.pageRect.size);
-        final linkWidget = widget.params.linkWidgetBuilder!(context, link, rectLink.size);
+        final rectLink = _linkRectToCroppedPageRect(rect);
+        if (rectLink.isEmpty) {
+          continue;
+        }
+        final linkWidget = widget.params.linkWidgetBuilder!(
+          context,
+          link,
+          rectLink.size,
+        );
         if (linkWidget != null) {
           linkWidgets.add(
             Positioned(
